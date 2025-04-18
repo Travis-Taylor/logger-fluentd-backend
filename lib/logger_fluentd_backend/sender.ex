@@ -4,11 +4,14 @@ defmodule LoggerFluentdBackend.Sender do
   alias Socket.Stream
   alias Socket.TCP
 
+  require Logger
+
   defmodule State do
-    defstruct socket: nil
+    defstruct socket: nil,
+              connection_failure_warned: false
   end
 
-  def start_link([])do
+  def start_link([]) do
     GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
   end
 
@@ -31,7 +34,9 @@ defmodule LoggerFluentdBackend.Sender do
     {:reply, :ok, %State{socket: nil}}
   end
 
-  def terminate(_reason, %State{socket: socket}) when not is_nil(socket) do
+  def terminate(_reason, %State{socket: nil}), do: :ok
+
+  def terminate(_reason, %State{socket: socket}) do
     Stream.close(socket)
   end
 
@@ -40,8 +45,13 @@ defmodule LoggerFluentdBackend.Sender do
   end
 
   def handle_cast({_, _, _, options} = msg, %State{socket: nil} = state) do
-    socket = connect(options)
-    handle_cast(msg, %State{state | socket: socket})
+    case connect(options, state) do
+      %State{socket: nil} = state ->
+        {:noreply, state}
+
+      state ->
+        handle_cast(msg, state)
+    end
   end
 
   def handle_cast({:send, tag, data, options}, %State{socket: socket} = state) do
@@ -50,12 +60,25 @@ defmodule LoggerFluentdBackend.Sender do
     {:noreply, state}
   end
 
-  defp connect(options) do
-    TCP.connect!(
-      options[:host] || "localhost",
-      options[:port] || 24224,
-      packet: 0
-    )
+  # Try to connect a socket, returning the state with the resulting socket if successful
+  @spec connect(keyword(), %State{}) :: %State{}
+  defp connect(options, %{connection_failure_warned: warned}) do
+    host = options[:host] || "localhost"
+    port = options[:port] || 24224
+
+    case TCP.connect(host, port, packet: 0) do
+      {:ok, socket} ->
+        %State{socket: socket, connection_failure_warned: false}
+
+      {:error, err} ->
+        if not warned do
+          Logger.error(
+            "Unable to connect TCP socket at #{host}:#{port} for fluent logger: #{err} "
+          )
+        end
+
+        %State{socket: nil, connection_failure_warned: true}
+    end
   end
 
   defp serializer(:msgpack), do: &Msgpax.pack!/1
