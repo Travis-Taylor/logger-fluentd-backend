@@ -9,7 +9,7 @@ defmodule LoggerFluentdBackend do
     children = [
       # Define workers and child supervisors to be supervised
       {LoggerFluentdBackend.Sender, []}
-     ]
+    ]
 
     # See http://elixir-lang.org/docs/stable/elixir/Supervisor.html
     # for other strategies and supported options

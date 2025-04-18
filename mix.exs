@@ -36,7 +36,7 @@ defmodule LoggerFluentdBackend.Mixfile do
     [
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
       {:msgpax, "~> 2.4"},
-      {:jason, "~> 1.1"},
+      {:jason, "~> 1.4"},
       {:socket, "~> 0.3"}
     ]
   end
