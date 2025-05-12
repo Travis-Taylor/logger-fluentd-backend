@@ -54,10 +54,10 @@ defmodule LoggerFluentdBackend.Sender do
     end
   end
 
-  def handle_cast({:send, _tag, _data, options}, %State{socket: socket} = state) do
-    # DEBUG
-    tag = "a tag"
-    data = %{}
+  def handle_cast({:send, tag, data, options}, %State{socket: socket} = state) do
+    tag = "pattern.logs.#{tag}"
+    # Fluent-bit expects an EXT type for Forward input timestamp (10-bytes, w/ 4B epoch
+    # seconds and 4B ns)
     now = now()
 
     {now_s, now_ms} =
@@ -72,28 +72,31 @@ defmodule LoggerFluentdBackend.Sender do
       |> Decimal.mult(1_000_000)
       |> Decimal.to_integer()
 
+    # Insert D7 (fixext 8), 00 (integer type), and time (2-part integer).
+    # spec for ref: https://github.com/msgpack/msgpack/blob/master/spec.md#formats
+    # NOTE: must be big-endian (elixir kernel default)
     time_bitstring =
       <<0xD7, 0x00>> <> <<now_s::unsigned-size(32)>> <> <<now_ns::unsigned-size(32)>>
 
-    IO.inspect(print_binary(time_bitstring))
-    IO.inspect(print_binary(Msgpax.pack!(now)))
-
     time_binary = Msgpax.unpack!(time_bitstring)
-    IO.inspect(time_binary)
-    candidate_payload = [tag, time_binary, data]
-    candidate_packet = serializer(options[:serializer]).(candidate_payload, iodata: false)
-    IO.puts("Candidate packet: \t#{inspect(print_binary(candidate_packet))}")
-    payload = [tag, now, data]
-    packet = serializer(options[:serializer]).(payload, iodata: false)
+    payload = [tag, time_binary, data]
+
+    packet = serializer(options[:serializer]).(payload)
     Stream.send!(socket, packet)
-    # IO.puts("Data: #{inspect(payload)}")
-    IO.puts("Sent packet \t\t#{inspect(print_binary(packet))}")
     {:noreply, state}
   end
 
   defp print_binary(bitstring) do
     for(<<x::size(1) <- bitstring>>, do: "#{x}")
     |> Enum.chunk_every(8)
+    |> Enum.join(" ")
+  end
+
+  defp print_hex(bitstring) do
+    bitstring
+    |> Base.encode16()
+    |> String.graphemes()
+    |> Enum.chunk_every(2)
     |> Enum.join(" ")
   end
 
@@ -118,7 +121,7 @@ defmodule LoggerFluentdBackend.Sender do
     end
   end
 
-  defp serializer(:msgpack), do: &Msgpax.pack!/2
+  defp serializer(:msgpack), do: &Msgpax.pack!/1
   defp serializer(:json), do: &Jason.encode!/1
   defp serializer(f) when is_function(f, 1), do: f
 
