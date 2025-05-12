@@ -55,7 +55,6 @@ defmodule LoggerFluentdBackend.Sender do
   end
 
   def handle_cast({:send, tag, data, options}, %State{socket: socket} = state) do
-    tag = "pattern.logs.#{tag}"
     # Fluent-bit expects an EXT type for Forward input timestamp (10-bytes, w/ 4B epoch
     # seconds and 4B ns)
     now = now()
@@ -74,7 +73,7 @@ defmodule LoggerFluentdBackend.Sender do
 
     # Insert D7 (fixext 8), 00 (integer type), and time (2-part integer).
     # spec for ref: https://github.com/msgpack/msgpack/blob/master/spec.md#formats
-    # NOTE: must be big-endian (elixir kernel default)
+    # NOTE: must be big-endian (elixir bitstring default)
     time_bitstring =
       <<0xD7, 0x00>> <> <<now_s::unsigned-size(32)>> <> <<now_ns::unsigned-size(32)>>
 
