@@ -8,6 +8,9 @@ defmodule LoggerFluentdBackend.Sender do
 
   defmodule State do
     defstruct socket: nil,
+              host: nil,
+              port: nil,
+              serializer: nil,
               connection_failure_warned: false
   end
 
@@ -19,12 +22,18 @@ defmodule LoggerFluentdBackend.Sender do
     {:ok, %State{socket: nil}}
   end
 
-  def send(tag, data, host, port, serializer) do
+  def configure(options) do
+    :ok = GenServer.cast(__MODULE__, {:configure, options})
+  end
+
+  def send(tag, data) do
+    :ok = GenServer.cast(__MODULE__, {:send, tag, data, []})
+  end
+
+  def send(tag, data, host, port, serializer \\ :msgpack) do
     options = [host: host, port: port, serializer: serializer]
     :ok = GenServer.cast(__MODULE__, {:send, tag, data, options})
   end
-
-  def send(tag, data, host, port), do: send(tag, data, host, port, :msgpack)
 
   def stop() do
     GenServer.call(__MODULE__, {:stop, []})
@@ -45,6 +54,8 @@ defmodule LoggerFluentdBackend.Sender do
   end
 
   def handle_cast({_, _, _, options} = msg, %State{socket: nil} = state) do
+    options = resolve_options(options, state)
+
     case connect(options, state) do
       %State{socket: nil} = state ->
         {:noreply, state}
@@ -54,7 +65,12 @@ defmodule LoggerFluentdBackend.Sender do
     end
   end
 
+  def handle_cast({:configure, opts}, state) do
+    {:noreply, construct_state(state.socket, opts, state.connection_failure_warned)}
+  end
+
   def handle_cast({:send, tag, data, options}, %State{socket: socket} = state) do
+    options = resolve_options(options, state)
     # Fluent-bit expects an EXT type for Forward input timestamp (10-bytes, w/ 4B epoch
     # seconds and 4B ns)
     now = now()
@@ -85,29 +101,16 @@ defmodule LoggerFluentdBackend.Sender do
     {:noreply, state}
   end
 
-  defp print_binary(bitstring) do
-    for(<<x::size(1) <- bitstring>>, do: "#{x}")
-    |> Enum.chunk_every(8)
-    |> Enum.join(" ")
-  end
-
-  defp print_hex(bitstring) do
-    bitstring
-    |> Base.encode16()
-    |> String.graphemes()
-    |> Enum.chunk_every(2)
-    |> Enum.join(" ")
-  end
-
   # Try to connect a socket, returning the state with the resulting socket if successful
   @spec connect(keyword(), %State{}) :: %State{}
-  defp connect(options, %{connection_failure_warned: warned}) do
-    host = options[:host] || "localhost"
-    port = options[:port] || 24224
+  defp connect(options, %{connection_failure_warned: warned} = state) do
+    options = resolve_options(options, state)
+    host = options[:host]
+    port = options[:port]
 
     case TCP.connect(host, port, packet: 0) do
       {:ok, socket} ->
-        %State{socket: socket, connection_failure_warned: false}
+        construct_state(socket, options, false)
 
       {:error, err} ->
         if not warned do
@@ -116,8 +119,30 @@ defmodule LoggerFluentdBackend.Sender do
           )
         end
 
-        %State{socket: nil, connection_failure_warned: true}
+        construct_state(nil, options, true)
     end
+  end
+
+  # Use explicitly passed options; or configured values in state if not specified; or
+  # fall back to default values
+  @spec resolve_options(keyword(), %State{}) :: keyword()
+  defp resolve_options(options, state) do
+    host = options[:host] || Map.get(state, :host, "localhost")
+    port = options[:port] || Map.get(state, :port, 24224)
+    serializer = options[:serializer] || Map.get(state, :serializer, :msgpack)
+    [host: host, port: port, serializer: serializer]
+  end
+
+  # Helper to construct the servevr state with the correct fields
+  @spec construct_state(TCP.t() | nil, keyword(), boolean()) :: %State{}
+  defp construct_state(socket, options, failure_warning) do
+    %State{
+      socket: socket,
+      connection_failure_warned: failure_warning,
+      host: options[:host],
+      port: options[:port],
+      serializer: options[:serializer]
+    }
   end
 
   defp serializer(:msgpack), do: &Msgpax.pack!/1

@@ -62,6 +62,9 @@ defmodule LoggerFluentdBackend.Logger do
     level = Keyword.get(config, :level)
     # metadata = Keyword.get(config, :metadata, [])
 
+    # Configure Sender state as well
+    Sender.configure(host: host, port: port, serializer: serializer)
+
     %{level: level, host: host, port: port, tag: tag, serializer: serializer}
   end
 
