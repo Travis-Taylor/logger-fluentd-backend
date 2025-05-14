@@ -113,6 +113,7 @@ defmodule LoggerFluentdBackend.Sender do
   end
 
   defp construct_payload(tag, data, extra_fields) do
+    tag = construct_tag(tag, data)
     # Fluent-bit expects an EXT type for Forward input timestamp (10-bytes, w/ 4B epoch
     # seconds and 4B ns)
     now = now()
@@ -141,6 +142,15 @@ defmodule LoggerFluentdBackend.Sender do
     data = Map.merge(extra_fields, data)
     [tag, time_binary, data]
   end
+
+  def construct_tag(tag, %{level: log_level}) when is_binary(log_level) do
+    case tag do
+      "" -> log_level
+      tag when is_binary(tag) -> "#{tag}.#{log_level}"
+    end
+  end
+
+  def construct_tag(tag, _data), do: tag
 
   defp serializer(:msgpack), do: &Msgpax.pack!/1
   defp serializer(:json), do: &Jason.encode!/1
