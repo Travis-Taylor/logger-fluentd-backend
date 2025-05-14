@@ -11,6 +11,7 @@ defmodule LoggerFluentdBackend.Sender do
               host: nil,
               port: nil,
               serializer: nil,
+              extra_fields: %{},
               connection_failure_warned: false
   end
 
@@ -53,6 +54,10 @@ defmodule LoggerFluentdBackend.Sender do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
   end
 
+  def handle_cast({:configure, options}, state) do
+    {:noreply, construct_state(state.socket, options, state.connection_failure_warned)}
+  end
+
   def handle_cast({_, _, _, options} = msg, %State{socket: nil} = state) do
     options = resolve_options(options, state)
 
@@ -65,37 +70,9 @@ defmodule LoggerFluentdBackend.Sender do
     end
   end
 
-  def handle_cast({:configure, opts}, state) do
-    {:noreply, construct_state(state.socket, opts, state.connection_failure_warned)}
-  end
-
   def handle_cast({:send, tag, data, options}, %State{socket: socket} = state) do
     options = resolve_options(options, state)
-    # Fluent-bit expects an EXT type for Forward input timestamp (10-bytes, w/ 4B epoch
-    # seconds and 4B ns)
-    now = now()
-
-    {now_s, now_ms} =
-      now
-      |> Decimal.from_float()
-      |> Decimal.div_rem(1)
-
-    now_s = Decimal.to_integer(now_s)
-
-    now_ns =
-      now_ms
-      |> Decimal.mult(1_000_000)
-      |> Decimal.to_integer()
-
-    # Insert D7 (fixext 8), 00 (integer type), and time (2-part integer).
-    # spec for ref: https://github.com/msgpack/msgpack/blob/master/spec.md#formats
-    # NOTE: must be big-endian (elixir bitstring default)
-    time_bitstring =
-      <<0xD7, 0x00>> <> <<now_s::unsigned-size(32)>> <> <<now_ns::unsigned-size(32)>>
-
-    time_binary = Msgpax.unpack!(time_bitstring)
-    payload = [tag, time_binary, data]
-
+    payload = construct_payload(tag, data, options[:extra_fields])
     packet = serializer(options[:serializer]).(payload)
     Stream.send!(socket, packet)
     {:noreply, state}
@@ -130,10 +107,46 @@ defmodule LoggerFluentdBackend.Sender do
     host = options[:host] || Map.get(state, :host, "localhost")
     port = options[:port] || Map.get(state, :port, 24224)
     serializer = options[:serializer] || Map.get(state, :serializer, :msgpack)
-    [host: host, port: port, serializer: serializer]
+    extra_fields = options[:extra_fields] || state.extra_fields
+
+    [host: host, port: port, serializer: serializer, extra_fields: extra_fields]
   end
 
-  # Helper to construct the servevr state with the correct fields
+  defp construct_payload(tag, data, extra_fields) do
+    # Fluent-bit expects an EXT type for Forward input timestamp (10-bytes, w/ 4B epoch
+    # seconds and 4B ns)
+    now = now()
+
+    {now_s, now_ms} =
+      now
+      |> Decimal.from_float()
+      |> Decimal.div_rem(1)
+
+    now_s = Decimal.to_integer(now_s)
+
+    now_ns =
+      now_ms
+      |> Decimal.mult(1_000_000)
+      |> Decimal.to_integer()
+
+    # Insert D7 (fixext 8), 00 (integer type), and time (2-part integer).
+    # spec for ref: https://github.com/msgpack/msgpack/blob/master/spec.md#formats
+    # NOTE: must be big-endian (elixir bitstring default)
+    time_bitstring =
+      <<0xD7, 0x00>> <> <<now_s::unsigned-size(32)>> <> <<now_ns::unsigned-size(32)>>
+
+    time_binary = Msgpax.unpack!(time_bitstring)
+
+    # Merge in configured extra fields with data payload
+    data = Map.merge(extra_fields, data)
+    [tag, time_binary, data]
+  end
+
+  defp serializer(:msgpack), do: &Msgpax.pack!/1
+  defp serializer(:json), do: &Jason.encode!/1
+  defp serializer(f) when is_function(f, 1), do: f
+
+  # Helper to construct the server state with the expected fields
   @spec construct_state(TCP.t() | nil, keyword(), boolean()) :: %State{}
   defp construct_state(socket, options, failure_warning) do
     %State{
@@ -141,13 +154,10 @@ defmodule LoggerFluentdBackend.Sender do
       connection_failure_warned: failure_warning,
       host: options[:host],
       port: options[:port],
-      serializer: options[:serializer]
+      serializer: options[:serializer],
+      extra_fields: Keyword.get(options, :extra_fields, %{})
     }
   end
-
-  defp serializer(:msgpack), do: &Msgpax.pack!/1
-  defp serializer(:json), do: &Jason.encode!/1
-  defp serializer(f) when is_function(f, 1), do: f
 
   defp now() do
     {megasec, sec, usec} = :os.timestamp()

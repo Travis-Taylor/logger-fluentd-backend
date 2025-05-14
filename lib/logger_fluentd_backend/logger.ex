@@ -61,34 +61,43 @@ defmodule LoggerFluentdBackend.Logger do
     tag = Keyword.get(config, :tag) || ""
     level = Keyword.get(config, :level)
     # metadata = Keyword.get(config, :metadata, [])
+    # Extra fields to emit with the log payload
+    extra_fields = Keyword.get(config, :extra_fields, %{})
 
     # Configure Sender state as well
-    Sender.configure(host: host, port: port, serializer: serializer)
+    Sender.configure(host: host, port: port, serializer: serializer, extra_fields: extra_fields)
 
-    %{level: level, host: host, port: port, tag: tag, serializer: serializer}
+    %{level: level, tag: tag}
   end
 
   defp configure_merge(env, options) do
     Keyword.merge(env, options, fn _, _v1, v2 -> v2 end)
   end
 
-  defp log_event(level, msg, _ts, md, %{tag: tag} = state) do
+  defp log_event(level, msg, _ts, md, %{tag: tag}) do
     f =
       case md[:function] do
         {f, a} -> "#{f}/#{a}"
         _ -> ""
       end
 
+    # TODO(ttaylor) Re-add module? Check w/ maintainer
+    filename =
+      md
+      |> Keyword.get(:file, "")
+      |> Path.rootname()
+      |> Path.basename()
+
     data = %{
       pid: inspect(md[:pid]),
-      module: inspect(md[:module]),
+      filename: filename,
       function: f,
-      line: inspect(md[:module]),
+      line: inspect(md[:line]),
       level: to_string(level),
       message: to_string(msg),
       payload: md[:payload]
     }
 
-    Sender.send(tag, data, state.host, state.port, state.serializer)
+    Sender.send(tag, data)
   end
 end
