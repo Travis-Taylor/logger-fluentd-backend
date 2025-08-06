@@ -48,6 +48,8 @@ defmodule LoggerFluentdBackend.Logger do
   ## Helpers
 
   defp meet_level?(_lvl, nil), do: true
+  # Somewhere deep in the deps, something is using deprecated :warn level. Don't let them
+  defp meet_level?(:warn, _), do: false
   defp meet_level?(lvl, min), do: Logger.compare_levels(lvl, min) != :lt
 
   defp configure(options) do
